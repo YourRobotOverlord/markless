@@ -1609,6 +1609,32 @@ fn test_mermaid_as_images_false_when_images_disabled() {
 }
 
 #[test]
+fn test_reflow_converts_mermaid_code_blocks_to_images_when_mermaid_enabled() {
+    // Simulates the startup ordering bug: the initial parse happens before
+    // the image picker is configured, so mermaid_as_images is false and
+    // mermaid blocks are parsed as code blocks with no ImageRefs. After the
+    // picker is attached, reflow_layout() reparses with the correct flag.
+    let md = "# Hello\n\n```mermaid\ngraph TD\n    A --> B\n```\n";
+
+    // Step 1: Parse without mermaid flag (simulates initial load in run())
+    let doc = Document::parse_with_layout(md, 80).unwrap();
+    assert!(
+        doc.images().is_empty(),
+        "initial parse should have no mermaid ImageRefs"
+    );
+
+    // Step 2: Reparse with mermaid_as_images=true (simulates what
+    // reflow_layout() does once the picker is configured)
+    let doc = Document::parse_with_mermaid_images(md, 80).unwrap();
+    assert_eq!(
+        doc.images().len(),
+        1,
+        "reparse with mermaid flag should produce an ImageRef"
+    );
+    assert!(doc.images()[0].src.starts_with("mermaid://"));
+}
+
+#[test]
 fn test_click_on_footnote_superscript_finds_link() {
     let md = "See this[^1] thing.\n\n[^1]: The footnote.";
     let doc = Document::parse_with_layout(md, 80).unwrap();
