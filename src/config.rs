@@ -380,19 +380,26 @@ pub fn parse_flag_tokens(tokens: &[String]) -> ConfigFlags {
             flags.inline_math = true;
         } else if token == "--syntax-map" {
             if let Some(next) = tokens.get(i + 1) {
-                if let Some((tok, name)) = next.split_once('=') {
-                    flags.syntax_map.insert(tok.to_string(), name.to_string());
-                }
+                parse_syntax_map_entry(next, &mut flags.syntax_map);
                 i += 1;
             }
         } else if let Some(value) = token.strip_prefix("--syntax-map=") {
-            if let Some((tok, name)) = value.split_once('=') {
-                flags.syntax_map.insert(tok.to_string(), name.to_string());
-            }
+            parse_syntax_map_entry(value, &mut flags.syntax_map);
         }
         i += 1;
     }
     flags
+}
+
+fn parse_syntax_map_entry(entry: &str, map: &mut std::collections::HashMap<String, String>) {
+    if let Some((tokens_part, name)) = entry.split_once('=') {
+        for tok in tokens_part.split(',') {
+            let tok = tok.trim();
+            if !tok.is_empty() {
+                map.insert(tok.to_string(), name.to_string());
+            }
+        }
+    }
 }
 
 fn parse_image_mode(s: &str) -> Option<ImageMode> {
@@ -1019,6 +1026,22 @@ mod tests {
         let merged = file.union(&local);
         assert_eq!(merged.syntax_map.get("csharp").map(String::as_str), Some("C#"));
         assert_eq!(merged.syntax_map.get("autohotkey").map(String::as_str), Some("AutoHotkey"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_comma_separated_tokens() {
+        let args = vec!["--syntax-map".to_string(), "csharp,dotnet=C#".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(flags.syntax_map.get("dotnet").map(String::as_str), Some("C#"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_comma_equals_form() {
+        let args = vec!["--syntax-map=autohotkey,ahk=AutoHotkey".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("autohotkey").map(String::as_str), Some("AutoHotkey"));
+        assert_eq!(flags.syntax_map.get("ahk").map(String::as_str), Some("AutoHotkey"));
     }
 
     #[test]
