@@ -98,6 +98,11 @@ struct Cli {
     #[arg(long, conflicts_with = "no_inline_math")]
     inline_math: bool,
 
+    /// Map a markdown fence token to a syntax name (e.g. csharp=C# or csharp,dotnet=C#).
+    /// May be specified multiple times.
+    #[arg(long, value_name = "TOKEN=SYNTAX")]
+    syntax_map: Vec<String>,
+
     /// Save current command-line flags as defaults in .marklessrc
     #[arg(long)]
     save: bool,
