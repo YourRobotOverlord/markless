@@ -129,11 +129,30 @@ mod tests {
     #[test]
     fn test_highlight_csharp_produces_colored_spans() {
         let code = "using System;\n\npublic class Hello {\n    static void Main() {\n        Console.WriteLine(\"Hello\");\n    }\n}\n";
-        let lines = highlight_code(Some("cs"), code);
+        // "csharp" is the common markdown fence identifier
+        let lines = highlight_code(Some("csharp"), code);
 
         assert!(!lines.is_empty(), "Expected lines from C# code");
         let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
-        assert!(has_color, "Expected at least one colored span for C#");
+        assert!(
+            has_color,
+            "Expected at least one colored span for C# via 'csharp' token"
+        );
+    }
+
+    #[test]
+    fn test_normalize_language_csharp_aliases() {
+        assert_eq!(normalize_language("csharp"), "cs");
+        assert_eq!(normalize_language("c#"), "cs");
+        assert_eq!(normalize_language("C#"), "cs");
+    }
+
+    #[test]
+    fn test_highlight_csharp_token_cs_also_works() {
+        let code = "using System;\n";
+        let lines = highlight_code(Some("cs"), code);
+        let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
+        assert!(has_color, "Expected colored spans for C# via 'cs' token");
     }
 
     #[test]
@@ -373,6 +392,23 @@ pub fn custom_syntax_set() -> &'static SyntaxSet {
     })
 }
 
+/// Map common markdown fence language identifiers to the token that syntect
+/// recognises (typically a file extension or syntax name).
+///
+/// syntect's `find_syntax_by_token` matches against registered file extensions
+/// and scope names, not arbitrary aliases, so identifiers like `csharp` that
+/// differ from the extension (`cs`) need an explicit mapping here.
+fn normalize_language(lang: &str) -> &str {
+    match lang {
+        "csharp" | "CSharp" | "CSHARP" | "c#" | "C#" | "dotnet" => "cs",
+        "javascript" | "JavaScript" => "js",
+        "typescript" | "TypeScript" => "ts",
+        "shellscript" | "shell" | "bash" | "zsh" | "sh" => "bash",
+        "dockerfile" | "Dockerfile" => "Dockerfile",
+        _ => lang,
+    }
+}
+
 /// Find a syntax by language token or name, checking custom definitions first.
 ///
 /// Returns the matched `SyntaxReference` along with the `SyntaxSet` that owns
@@ -384,6 +420,7 @@ fn find_syntax(
     &'static syntect::parsing::SyntaxReference,
     &'static SyntaxSet,
 )> {
+    let lang = normalize_language(lang);
     let custom = custom_syntax_set();
     if let Some(s) = custom
         .find_syntax_by_token(lang)
