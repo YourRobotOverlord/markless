@@ -123,6 +123,47 @@ pub fn local_override_path() -> PathBuf {
     PathBuf::from(".marklessrc")
 }
 
+/// Returns the directory where users can drop `.sublime-syntax` files to
+/// add custom language highlighting at runtime.
+///
+/// - Windows: `%APPDATA%\markless\syntaxes\`
+/// - macOS:   `~/Library/Application Support/markless/syntaxes/`
+/// - Linux:   `$XDG_CONFIG_HOME/markless/syntaxes/` or `~/.config/markless/syntaxes/`
+pub fn user_syntaxes_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("markless").join("syntaxes");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("markless")
+                .join("syntaxes");
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg).join("markless").join("syntaxes");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".config")
+                .join("markless")
+                .join("syntaxes");
+        }
+    }
+
+    PathBuf::from(".markless-syntaxes")
+}
+
 /// Split a string into tokens, respecting double-quoted segments.
 ///
 /// Unquoted segments are split on whitespace. Double-quoted segments

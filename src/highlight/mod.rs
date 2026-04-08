@@ -20,6 +20,23 @@ use crate::document::{InlineColor, InlineSpan, InlineStyle};
 mod tests {
     use super::*;
 
+    /// Verify that a .sublime-syntax file dropped in the user syntaxes dir
+    /// is picked up by `user_syntax_set()` and can be used for highlighting.
+    #[test]
+    fn test_user_syntax_dir_loading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Write a minimal valid sublime-syntax into the temp dir
+        let syntax_src = "%YAML 1.2\n---\nname: TestLang\nscope: source.testlang\nfile_extensions:\n  - testlang\ncontexts:\n  main: []\n";
+        std::fs::write(dir.path().join("TestLang.sublime-syntax"), syntax_src)
+            .expect("write syntax");
+
+        let ss = load_user_syntaxes_from(dir.path());
+        assert!(
+            ss.find_syntax_by_extension("testlang").is_some(),
+            "user syntax dir should expose the newly-dropped TestLang syntax"
+        );
+    }
+
     #[test]
     fn test_highlight_rust_produces_colored_spans() {
         let code = "fn main() {\n    let x = 1;\n}\n";
@@ -278,7 +295,7 @@ mod tests {
 /// Returns the syntax language name for a file path, or `None` if the file
 /// is markdown or has no recognized syntax.
 pub fn language_for_file(path: &std::path::Path) -> Option<&'static str> {
-    for ss in [custom_syntax_set(), default_syntax_set()] {
+    for ss in [user_syntax_set(), custom_syntax_set(), default_syntax_set()] {
         let Ok(Some(syntax)) = ss.find_syntax_for_file(path) else {
             continue;
         };
@@ -392,6 +409,47 @@ pub fn custom_syntax_set() -> &'static SyntaxSet {
     })
 }
 
+/// Load `.sublime-syntax` files from `dir` into a new [`SyntaxSet`].
+///
+/// Files that fail to parse are skipped with a warning. Returns an empty
+/// `SyntaxSet` if the directory does not exist or cannot be read.
+pub fn load_user_syntaxes_from(dir: &std::path::Path) -> SyntaxSet {
+    let mut builder = SyntaxSetBuilder::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return builder.build(),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sublime-syntax") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(src) => match SyntaxDefinition::load_from_str(&src, true, None) {
+                Ok(def) => {
+                    tracing::debug!("Loaded user syntax: {}", path.display());
+                    builder.add(def);
+                }
+                Err(e) => tracing::warn!("Failed to parse user syntax {}: {e}", path.display()),
+            },
+            Err(e) => tracing::warn!("Failed to read {}: {e}", path.display()),
+        }
+    }
+    builder.build()
+}
+
+/// Returns the [`SyntaxSet`] built from the user's syntaxes directory.
+///
+/// Loaded once at first access; call sites should not cache the reference
+/// themselves since it is already a `'static` reference.
+pub fn user_syntax_set() -> &'static SyntaxSet {
+    static USER: OnceLock<SyntaxSet> = OnceLock::new();
+    USER.get_or_init(|| {
+        let _scope = crate::perf::scope("highlight.syntax_set.load_user");
+        load_user_syntaxes_from(&crate::config::user_syntaxes_dir())
+    })
+}
+
 /// Map common markdown fence language identifiers to the token that syntect
 /// recognises (typically a file extension or syntax name).
 ///
@@ -409,8 +467,9 @@ fn normalize_language(lang: &str) -> &str {
     }
 }
 
-/// Find a syntax by language token or name, checking custom definitions first.
+/// Find a syntax by language token or name.
 ///
+/// Search order: user-loaded syntaxes → embedded custom → syntect defaults.
 /// Returns the matched `SyntaxReference` along with the `SyntaxSet` that owns
 /// it. Both are needed because `HighlightLines::highlight_line` must be called
 /// with the owning set.
@@ -421,18 +480,15 @@ fn find_syntax(
     &'static SyntaxSet,
 )> {
     let lang = normalize_language(lang);
-    let custom = custom_syntax_set();
-    if let Some(s) = custom
-        .find_syntax_by_token(lang)
-        .or_else(|| custom.find_syntax_by_name(lang))
-    {
-        return Some((s, custom));
+    for ss in [user_syntax_set(), custom_syntax_set(), default_syntax_set()] {
+        if let Some(s) = ss
+            .find_syntax_by_token(lang)
+            .or_else(|| ss.find_syntax_by_name(lang))
+        {
+            return Some((s, ss));
+        }
     }
-    let defaults = default_syntax_set();
-    defaults
-        .find_syntax_by_token(lang)
-        .or_else(|| defaults.find_syntax_by_name(lang))
-        .map(|s| (s, defaults))
+    None
 }
 
 fn theme() -> &'static Theme {
