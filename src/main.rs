@@ -23,7 +23,7 @@ use markless::config::{
     ConfigFlags, ImageMode, ThemeMode, clear_config_flags, global_config_path, load_config_flags,
     local_override_path, parse_flag_tokens, save_config_flags,
 };
-use markless::highlight::{HighlightBackground, set_background_mode};
+use markless::highlight::{HighlightBackground, set_background_mode, set_user_syntax_map};
 use markless::perf;
 
 /// A terminal markdown viewer with image support
@@ -97,6 +97,11 @@ struct Cli {
     /// Re-enable inline (Unicode) math (overrides saved --no-inline-math)
     #[arg(long, conflicts_with = "no_inline_math")]
     inline_math: bool,
+
+    /// Map a markdown fence token to a syntax name (e.g. csharp=C# or csharp,dotnet=C#).
+    /// May be specified multiple times.
+    #[arg(long, value_name = "TOKEN=SYNTAX")]
+    syntax_map: Vec<String>,
 
     /// Save current command-line flags as defaults in .marklessrc
     #[arg(long)]
@@ -313,6 +318,7 @@ fn main() -> Result<()> {
     };
     let effective = file_flags.union(&cli_flags);
 
+    set_user_syntax_map(effective.syntax_map.clone());
     perf::set_enabled(effective.perf);
     let render_debug_log_path = effective
         .render_debug_log

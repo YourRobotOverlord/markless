@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -56,11 +57,20 @@ pub struct ConfigFlags {
     pub no_inline_math: bool,
     /// Re-enable inline math (overrides saved `--no-inline-math`).
     pub inline_math: bool,
+    /// Token-to-syntax-name mappings (e.g. "csharp" → "C#").
+    /// Each entry maps a markdown fence language token to the syntax name or
+    /// file extension that syntect recognises.
+    pub syntax_map: HashMap<String, String>,
 }
 
 impl ConfigFlags {
     #[must_use]
     pub fn union(&self, other: &Self) -> Self {
+        let mut syntax_map = self.syntax_map.clone();
+        // other's entries override self's (same precedence rule as other Options)
+        for (k, v) in &other.syntax_map {
+            syntax_map.insert(k.clone(), v.clone());
+        }
         Self {
             watch: self.watch || other.watch,
             no_mouse_select: self.no_mouse_select || other.no_mouse_select,
@@ -80,6 +90,7 @@ impl ConfigFlags {
             editor: other.editor.clone().or_else(|| self.editor.clone()),
             no_inline_math: self.no_inline_math || other.no_inline_math,
             inline_math: self.inline_math || other.inline_math,
+            syntax_map,
         }
     }
 }
@@ -121,6 +132,47 @@ pub fn global_config_path() -> PathBuf {
 
 pub fn local_override_path() -> PathBuf {
     PathBuf::from(".marklessrc")
+}
+
+/// Returns the directory where users can drop `.sublime-syntax` files to
+/// add custom language highlighting at runtime.
+///
+/// - Windows: `%APPDATA%\markless\syntaxes\`
+/// - macOS:   `~/Library/Application Support/markless/syntaxes/`
+/// - Linux:   `$XDG_CONFIG_HOME/markless/syntaxes/` or `~/.config/markless/syntaxes/`
+pub fn user_syntaxes_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("markless").join("syntaxes");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("markless")
+                .join("syntaxes");
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg).join("markless").join("syntaxes");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".config")
+                .join("markless")
+                .join("syntaxes");
+        }
+    }
+
+    PathBuf::from(".markless-syntaxes")
 }
 
 /// Split a string into tokens, respecting double-quoted segments.
@@ -238,6 +290,12 @@ pub fn save_config_flags(path: &Path, flags: &ConfigFlags) -> Result<()> {
             lines.push(format!("--editor {editor}"));
         }
     }
+    // Sort for deterministic output
+    let mut map_entries: Vec<_> = flags.syntax_map.iter().collect();
+    map_entries.sort_by_key(|(k, _)| k.as_str());
+    for (token, name) in map_entries {
+        lines.push(format!("--syntax-map {token}={name}"));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
@@ -320,10 +378,28 @@ pub fn parse_flag_tokens(tokens: &[String]) -> ConfigFlags {
             flags.no_inline_math = true;
         } else if token == "--inline-math" {
             flags.inline_math = true;
+        } else if token == "--syntax-map" {
+            if let Some(next) = tokens.get(i + 1) {
+                parse_syntax_map_entry(next, &mut flags.syntax_map);
+                i += 1;
+            }
+        } else if let Some(value) = token.strip_prefix("--syntax-map=") {
+            parse_syntax_map_entry(value, &mut flags.syntax_map);
         }
         i += 1;
     }
     flags
+}
+
+fn parse_syntax_map_entry(entry: &str, map: &mut std::collections::HashMap<String, String>) {
+    if let Some((tokens_part, name)) = entry.split_once('=') {
+        for tok in tokens_part.split(',') {
+            let tok = tok.trim();
+            if !tok.is_empty() {
+                map.insert(tok.to_string(), name.to_string());
+            }
+        }
+    }
 }
 
 fn parse_image_mode(s: &str) -> Option<ImageMode> {
@@ -868,8 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_math_overrides_no_inline_math_in_save() {
-        let dir = tempdir().unwrap();
+    fn test_inline_math_overrides_no_inline_math_in_save() {        let dir = tempdir().unwrap();
         let path = dir.path().join(".marklessrc");
         // Save --no-inline-math first
         let flags = ConfigFlags {
@@ -889,5 +964,101 @@ mod tests {
             !loaded.no_inline_math,
             "--inline-math should prevent --no-inline-math from being saved"
         );
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_space_form() {
+        let args = vec![
+            "--syntax-map".to_string(),
+            "csharp=C#".to_string(),
+        ];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_equals_form() {
+        let args = vec!["--syntax-map=autohotkey=AutoHotkey".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(
+            flags.syntax_map.get("autohotkey").map(String::as_str),
+            Some("AutoHotkey")
+        );
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_multiple_entries() {
+        let args = vec![
+            "--syntax-map".to_string(),
+            "csharp=C#".to_string(),
+            "--syntax-map".to_string(),
+            "mypython=Python".to_string(),
+        ];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(flags.syntax_map.get("mypython").map(String::as_str), Some("Python"));
+    }
+
+    #[test]
+    fn test_config_union_syntax_map_other_overrides_self() {
+        let file = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "C#".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let cli = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "cs".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let merged = file.union(&cli);
+        assert_eq!(merged.syntax_map.get("csharp").map(String::as_str), Some("cs"));
+    }
+
+    #[test]
+    fn test_config_union_syntax_map_merges_disjoint_entries() {
+        let file = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "C#".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let local = ConfigFlags {
+            syntax_map: [("autohotkey".to_string(), "AutoHotkey".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let merged = file.union(&local);
+        assert_eq!(merged.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(merged.syntax_map.get("autohotkey").map(String::as_str), Some("AutoHotkey"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_comma_separated_tokens() {
+        let args = vec!["--syntax-map".to_string(), "csharp,dotnet=C#".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(flags.syntax_map.get("dotnet").map(String::as_str), Some("C#"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_comma_equals_form() {
+        let args = vec!["--syntax-map=autohotkey,ahk=AutoHotkey".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("autohotkey").map(String::as_str), Some("AutoHotkey"));
+        assert_eq!(flags.syntax_map.get("ahk").map(String::as_str), Some("AutoHotkey"));
+    }
+
+    #[test]
+    fn test_save_load_syntax_map_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".marklessrc");
+        let flags = ConfigFlags {
+            syntax_map: [
+                ("csharp".to_string(), "C#".to_string()),
+                ("ahk".to_string(), "AutoHotkey".to_string()),
+            ]
+            .into(),
+            ..ConfigFlags::default()
+        };
+        save_config_flags(&path, &flags).unwrap();
+        let loaded = load_config_flags(&path).unwrap();
+        assert_eq!(loaded.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(loaded.syntax_map.get("ahk").map(String::as_str), Some("AutoHotkey"));
     }
 }

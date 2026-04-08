@@ -2,11 +2,12 @@
 //!
 //! Uses syntect for highlighting with Sublime Text syntax definitions.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxDefinition, SyntaxSet, SyntaxSetBuilder};
 
 use crate::document::{InlineColor, InlineSpan, InlineStyle};
 
@@ -19,6 +20,23 @@ use crate::document::{InlineColor, InlineSpan, InlineStyle};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verify that a .sublime-syntax file dropped in the user syntaxes dir
+    /// is picked up by `user_syntax_set()` and can be used for highlighting.
+    #[test]
+    fn test_user_syntax_dir_loading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Write a minimal valid sublime-syntax into the temp dir
+        let syntax_src = "%YAML 1.2\n---\nname: TestLang\nscope: source.testlang\nfile_extensions:\n  - testlang\ncontexts:\n  main: []\n";
+        std::fs::write(dir.path().join("TestLang.sublime-syntax"), syntax_src)
+            .expect("write syntax");
+
+        let ss = load_user_syntaxes_from(dir.path());
+        assert!(
+            ss.find_syntax_by_extension("testlang").is_some(),
+            "user syntax dir should expose the newly-dropped TestLang syntax"
+        );
+    }
 
     #[test]
     fn test_highlight_rust_produces_colored_spans() {
@@ -124,6 +142,14 @@ mod tests {
         assert!(adjusted.r < bright.r);
         assert!(adjusted.g < bright.g);
         assert!(adjusted.b < bright.b);
+    }
+
+    #[test]
+    fn test_highlight_csharp_token_cs_also_works() {
+        let code = "using System;\n";
+        let lines = highlight_code(Some("cs"), code);
+        let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
+        assert!(has_color, "Expected colored spans for C# via 'cs' token");
     }
 
     #[test]
@@ -239,13 +265,16 @@ mod tests {
 /// Returns the syntax language name for a file path, or `None` if the file
 /// is markdown or has no recognized syntax.
 pub fn language_for_file(path: &std::path::Path) -> Option<&'static str> {
-    let ss = syntax_set();
-    let syntax = ss.find_syntax_for_file(path).ok().flatten()?;
-    if syntax.name == "Markdown" {
-        return None;
+    for ss in [user_syntax_set(), custom_syntax_set(), default_syntax_set()] {
+        let Ok(Some(syntax)) = ss.find_syntax_for_file(path) else {
+            continue;
+        };
+        if syntax.name == "Markdown" {
+            return None;
+        }
+        return Some(leak_str(&syntax.name));
     }
-    // Leak the name so we get a 'static str — the SyntaxSet is 'static anyway.
-    Some(leak_str(&syntax.name))
+    None
 }
 
 /// Cache interned strings to avoid leaking duplicates.
@@ -267,13 +296,10 @@ fn leak_str(s: &str) -> &'static str {
 
 pub fn highlight_code(language: Option<&str>, code: &str) -> Vec<Vec<InlineSpan>> {
     let mut lines = Vec::new();
-    let syntax_set = syntax_set();
     let mode = background_mode();
-    let syntax = language
-        .and_then(|lang| syntax_set.find_syntax_by_token(lang))
-        .or_else(|| language.and_then(|lang| syntax_set.find_syntax_by_name(lang)));
+    let syntax_source = language.and_then(find_syntax);
 
-    let Some(syntax) = syntax else {
+    let Some((syntax, syntax_set)) = syntax_source else {
         for line in code.lines() {
             let style = InlineStyle {
                 code: true,
@@ -321,12 +347,136 @@ pub fn highlight_code(language: Option<&str>, code: &str) -> Vec<Vec<InlineSpan>
     lines
 }
 
-fn syntax_set() -> &'static SyntaxSet {
+fn default_syntax_set() -> &'static SyntaxSet {
     static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAX_SET.get_or_init(|| {
         let _scope = crate::perf::scope("highlight.syntax_set.load_defaults");
         SyntaxSet::load_defaults_newlines()
     })
+}
+
+/// Syntax source files embedded at compile time.
+///
+/// Each entry is the raw YAML text of a `.sublime-syntax` file. Add new
+/// entries here to bundle additional language definitions with the binary.
+const CUSTOM_SYNTAXES: &[&str] = &[];
+
+pub fn custom_syntax_set() -> &'static SyntaxSet {
+    static CUSTOM: OnceLock<SyntaxSet> = OnceLock::new();
+    CUSTOM.get_or_init(|| {
+        let _scope = crate::perf::scope("highlight.syntax_set.load_custom");
+        let mut builder = SyntaxSetBuilder::new();
+        for src in CUSTOM_SYNTAXES {
+            match SyntaxDefinition::load_from_str(src, true, None) {
+                Ok(def) => builder.add(def),
+                Err(e) => tracing::warn!("Failed to load embedded syntax definition: {e}"),
+            }
+        }
+        builder.build()
+    })
+}
+
+/// Load `.sublime-syntax` files from `dir` into a new [`SyntaxSet`].
+///
+/// Files that fail to parse are skipped with a warning. Returns an empty
+/// `SyntaxSet` if the directory does not exist or cannot be read.
+pub fn load_user_syntaxes_from(dir: &std::path::Path) -> SyntaxSet {
+    let mut builder = SyntaxSetBuilder::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return builder.build(),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sublime-syntax") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(src) => match SyntaxDefinition::load_from_str(&src, true, None) {
+                Ok(def) => {
+                    tracing::debug!("Loaded user syntax: {}", path.display());
+                    builder.add(def);
+                }
+                Err(e) => tracing::warn!("Failed to parse user syntax {}: {e}", path.display()),
+            },
+            Err(e) => tracing::warn!("Failed to read {}: {e}", path.display()),
+        }
+    }
+    builder.build()
+}
+
+/// Returns the [`SyntaxSet`] built from the user's syntaxes directory.
+///
+/// Loaded once at first access; call sites should not cache the reference
+/// themselves since it is already a `'static` reference.
+pub fn user_syntax_set() -> &'static SyntaxSet {
+    static USER: OnceLock<SyntaxSet> = OnceLock::new();
+    USER.get_or_init(|| {
+        let _scope = crate::perf::scope("highlight.syntax_set.load_user");
+        load_user_syntaxes_from(&crate::config::user_syntaxes_dir())
+    })
+}
+
+static USER_SYNTAX_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+/// Map common markdown fence language identifiers to the token that syntect
+/// recognises (typically a file extension or syntax name).
+///
+/// syntect's `find_syntax_by_token` matches against registered file extensions
+/// and scope names, not arbitrary aliases, so identifiers like `csharp` that
+/// differ from the extension (`cs`) need an explicit mapping here.
+///
+/// User-provided mappings (set via `--syntax-map` in the config file) are
+/// checked first and can override the built-in aliases.
+fn normalize_language(lang: &str) -> std::borrow::Cow<'_, str> {
+    // Check user-provided map first
+    if let Some(map) = USER_SYNTAX_MAP.get() {
+        if let Some(mapped) = map.get(lang) {
+            return std::borrow::Cow::Owned(mapped.clone());
+        }
+    }
+    // Built-in aliases
+    let mapped = match lang {
+        "javascript" | "JavaScript" => "js",
+        "typescript" | "TypeScript" => "ts",
+        "shellscript" | "shell" | "bash" | "zsh" | "sh" => "bash",
+        "dockerfile" | "Dockerfile" => "Dockerfile",
+        _ => lang,
+    };
+    std::borrow::Cow::Borrowed(mapped)
+}
+
+/// Set the user-provided token-to-syntax mappings loaded from the config file.
+///
+/// Must be called at most once, before any highlighting begins. Subsequent
+/// calls after initialization are silently ignored (OnceLock semantics).
+pub fn set_user_syntax_map(map: HashMap<String, String>) {
+    let _ = USER_SYNTAX_MAP.set(map);
+}
+
+/// Find a syntax by language token or name.
+///
+/// Search order: user-loaded syntaxes → embedded custom → syntect defaults.
+/// Returns the matched `SyntaxReference` along with the `SyntaxSet` that owns
+/// it. Both are needed because `HighlightLines::highlight_line` must be called
+/// with the owning set.
+fn find_syntax(
+    lang: &str,
+) -> Option<(
+    &'static syntect::parsing::SyntaxReference,
+    &'static SyntaxSet,
+)> {
+    let lang = normalize_language(lang);
+    let lang = lang.as_ref();
+    for ss in [user_syntax_set(), custom_syntax_set(), default_syntax_set()] {
+        if let Some(s) = ss
+            .find_syntax_by_token(lang)
+            .or_else(|| ss.find_syntax_by_name(lang))
+        {
+            return Some((s, ss));
+        }
+    }
+    None
 }
 
 fn theme() -> &'static Theme {

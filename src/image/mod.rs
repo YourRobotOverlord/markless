@@ -13,6 +13,7 @@ pub use loader::{ImageCache, ImageLoader};
 pub use protocol::detect_protocol;
 
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
@@ -22,6 +23,7 @@ use ratatui_image::picker::{Picker, ProtocolType};
 
 use crate::config::ImageMode;
 
+#[cfg(unix)]
 const PICKER_QUERY_TIMEOUT_MS: u64 = 250;
 
 /// Map an [`ImageMode`] to the corresponding [`ProtocolType`].
@@ -237,6 +239,7 @@ fn xterm_256_to_rgb(i: u8) -> (u8, u8, u8) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn test_picker_query_timeout_is_fast() {
         let options = query_options();
