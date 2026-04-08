@@ -72,6 +72,7 @@ When given a directory, markless opens in browse mode: the sidebar shows the fil
 - `--theme <auto|light|dark>`  Force highlight theme background (`auto` queries the terminal via OSC 11)
 - `--no-inline-math`  Render inline math as images instead of Unicode text
 - `--inline-math`  Re-enable inline Unicode math (overrides saved `--no-inline-math`)
+- `--syntax-map <TOKEN=SYNTAX>`  Map a markdown fence language token to a syntect syntax name. May be specified multiple times. Supports comma-separated tokens (e.g. `csharp,dotnet=C#`). See [Custom Syntax Highlighting](#custom-syntax-highlighting).
 - `--perf`  Enable startup performance logging
 - `--render-debug-log <PATH>`  Write render/image debug events to a file
 - `--editor <cmd>`  Use an external editor instead of the built-in one (e.g. `--editor vim`, `--editor "emacsclient -t"`)
@@ -81,7 +82,48 @@ When given a directory, markless opens in browse mode: the sidebar shows the fil
 
 Config files:
 - Global (macOS): `~/Library/Application Support/markless/config`
+- Global (Linux): `$XDG_CONFIG_HOME/markless/config` or `~/.config/markless/config`
+- Global (Windows): `%APPDATA%\markless\config`
 - Local override: `.marklessrc` in the current directory
+
+Each line in a config file is a flag (and optional value), exactly as you would pass it on the command line. Comments start with `#`.
+
+```
+# ~/.config/markless/config
+--theme dark
+--wrap-width 100
+--syntax-map csharp,dotnet=C#
+--syntax-map autohotkey,ahk=AutoHotkey
+```
+
+## Custom Syntax Highlighting
+
+Markless uses [syntect](https://github.com/trishume/syntect) for syntax highlighting. You can add support for any language at runtime without recompiling.
+
+### Adding a syntax definition
+
+Drop a `.sublime-syntax` file into your user syntaxes directory:
+
+- **Windows:** `%APPDATA%\markless\syntaxes\`
+- **macOS:** `~/Library/Application Support/markless/syntaxes/`
+- **Linux:** `$XDG_CONFIG_HOME/markless/syntaxes/` or `~/.config/markless/syntaxes/`
+
+Sublime Text syntax packages are a good source — for example, [sublimehq/Packages](https://github.com/sublimehq/Packages) on GitHub has definitions for C#, Go, Python, and many others.
+
+### Mapping fence tokens to syntaxes
+
+Markdown fence tokens (e.g. ` ```csharp `) must match a syntect file extension or exact syntax name. Use `--syntax-map` to bridge the gap:
+
+```
+--syntax-map csharp,dotnet=C#
+--syntax-map autohotkey,ahk=AutoHotkey
+```
+
+The left side is one or more comma-separated fence tokens; the right side is the syntax name (the `name:` field at the top of the `.sublime-syntax` file). Add these to your config file or pass them on the command line.
+
+```bash
+markless --syntax-map csharp=C# notes.md
+```
 
 ## Key Bindings
 
