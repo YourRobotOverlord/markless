@@ -145,52 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn test_highlight_csharp_produces_colored_spans() {
-        let code = "using System;\n\npublic class Hello {\n    static void Main() {\n        Console.WriteLine(\"Hello\");\n    }\n}\n";
-        // "csharp" is the common markdown fence identifier
-        let lines = highlight_code(Some("csharp"), code);
-
-        assert!(!lines.is_empty(), "Expected lines from C# code");
-        let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
-        assert!(
-            has_color,
-            "Expected at least one colored span for C# via 'csharp' token"
-        );
-    }
-
-    #[test]
-    fn test_normalize_language_csharp_aliases() {
-        assert_eq!(normalize_language("csharp").as_ref(), "cs");
-        assert_eq!(normalize_language("c#").as_ref(), "cs");
-        assert_eq!(normalize_language("C#").as_ref(), "cs");
-    }
-
-    #[test]
-    fn test_set_user_syntax_map_overrides_builtin_alias() {
-        // The user map is a process-level OnceLock, so we can only test that
-        // if it IS set, user entries take precedence.  Use a token that has no
-        // built-in alias so the test is idempotent across the test suite.
-        let result = normalize_language("myfakelang");
-        // Without a user map entry the token passes through unchanged.
-        assert_eq!(result.as_ref(), "myfakelang");
-    }
-
-    #[test]
     fn test_highlight_csharp_token_cs_also_works() {
         let code = "using System;\n";
         let lines = highlight_code(Some("cs"), code);
         let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
         assert!(has_color, "Expected colored spans for C# via 'cs' token");
-    }
-
-    #[test]
-    fn test_custom_syntax_set_contains_csharp() {
-        let cs_set = custom_syntax_set();
-        let syntax = cs_set.find_syntax_by_extension("cs");
-        assert!(
-            syntax.is_some(),
-            "custom_syntax_set should contain C# (extension: cs)"
-        );
     }
 
     #[test]
@@ -400,10 +359,7 @@ fn default_syntax_set() -> &'static SyntaxSet {
 ///
 /// Each entry is the raw YAML text of a `.sublime-syntax` file. Add new
 /// entries here to bundle additional language definitions with the binary.
-const CUSTOM_SYNTAXES: &[&str] = &[include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/syntaxes/CSharp.sublime-syntax"
-))];
+const CUSTOM_SYNTAXES: &[&str] = &[];
 
 pub fn custom_syntax_set() -> &'static SyntaxSet {
     static CUSTOM: OnceLock<SyntaxSet> = OnceLock::new();
@@ -481,7 +437,6 @@ fn normalize_language(lang: &str) -> std::borrow::Cow<'_, str> {
     }
     // Built-in aliases
     let mapped = match lang {
-        "csharp" | "CSharp" | "CSHARP" | "c#" | "C#" | "dotnet" => "cs",
         "javascript" | "JavaScript" => "js",
         "typescript" | "TypeScript" => "ts",
         "shellscript" | "shell" | "bash" | "zsh" | "sh" => "bash",
