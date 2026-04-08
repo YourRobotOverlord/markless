@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxDefinition, SyntaxSet, SyntaxSetBuilder};
 
 use crate::document::{InlineColor, InlineSpan, InlineStyle};
 
@@ -127,6 +127,26 @@ mod tests {
     }
 
     #[test]
+    fn test_highlight_csharp_produces_colored_spans() {
+        let code = "using System;\n\npublic class Hello {\n    static void Main() {\n        Console.WriteLine(\"Hello\");\n    }\n}\n";
+        let lines = highlight_code(Some("cs"), code);
+
+        assert!(!lines.is_empty(), "Expected lines from C# code");
+        let has_color = lines.iter().flatten().any(|span| span.style().fg.is_some());
+        assert!(has_color, "Expected at least one colored span for C#");
+    }
+
+    #[test]
+    fn test_custom_syntax_set_contains_csharp() {
+        let cs_set = custom_syntax_set();
+        let syntax = cs_set.find_syntax_by_extension("cs");
+        assert!(
+            syntax.is_some(),
+            "custom_syntax_set should contain C# (extension: cs)"
+        );
+    }
+
+    #[test]
     fn test_language_for_file_returns_rust_for_rs() {
         let lang = language_for_file(std::path::Path::new("foo.rs"));
         assert_eq!(lang, Some("Rust"));
@@ -239,13 +259,16 @@ mod tests {
 /// Returns the syntax language name for a file path, or `None` if the file
 /// is markdown or has no recognized syntax.
 pub fn language_for_file(path: &std::path::Path) -> Option<&'static str> {
-    let ss = syntax_set();
-    let syntax = ss.find_syntax_for_file(path).ok().flatten()?;
-    if syntax.name == "Markdown" {
-        return None;
+    for ss in [custom_syntax_set(), default_syntax_set()] {
+        let Ok(Some(syntax)) = ss.find_syntax_for_file(path) else {
+            continue;
+        };
+        if syntax.name == "Markdown" {
+            return None;
+        }
+        return Some(leak_str(&syntax.name));
     }
-    // Leak the name so we get a 'static str — the SyntaxSet is 'static anyway.
-    Some(leak_str(&syntax.name))
+    None
 }
 
 /// Cache interned strings to avoid leaking duplicates.
@@ -267,13 +290,10 @@ fn leak_str(s: &str) -> &'static str {
 
 pub fn highlight_code(language: Option<&str>, code: &str) -> Vec<Vec<InlineSpan>> {
     let mut lines = Vec::new();
-    let syntax_set = syntax_set();
     let mode = background_mode();
-    let syntax = language
-        .and_then(|lang| syntax_set.find_syntax_by_token(lang))
-        .or_else(|| language.and_then(|lang| syntax_set.find_syntax_by_name(lang)));
+    let syntax_source = language.and_then(find_syntax);
 
-    let Some(syntax) = syntax else {
+    let Some((syntax, syntax_set)) = syntax_source else {
         for line in code.lines() {
             let style = InlineStyle {
                 code: true,
@@ -321,12 +341,61 @@ pub fn highlight_code(language: Option<&str>, code: &str) -> Vec<Vec<InlineSpan>
     lines
 }
 
-fn syntax_set() -> &'static SyntaxSet {
+fn default_syntax_set() -> &'static SyntaxSet {
     static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAX_SET.get_or_init(|| {
         let _scope = crate::perf::scope("highlight.syntax_set.load_defaults");
         SyntaxSet::load_defaults_newlines()
     })
+}
+
+/// Syntax source files embedded at compile time.
+///
+/// Each entry is the raw YAML text of a `.sublime-syntax` file. Add new
+/// entries here to bundle additional language definitions with the binary.
+const CUSTOM_SYNTAXES: &[&str] = &[include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/syntaxes/CSharp.sublime-syntax"
+))];
+
+pub fn custom_syntax_set() -> &'static SyntaxSet {
+    static CUSTOM: OnceLock<SyntaxSet> = OnceLock::new();
+    CUSTOM.get_or_init(|| {
+        let _scope = crate::perf::scope("highlight.syntax_set.load_custom");
+        let mut builder = SyntaxSetBuilder::new();
+        for src in CUSTOM_SYNTAXES {
+            match SyntaxDefinition::load_from_str(src, true, None) {
+                Ok(def) => builder.add(def),
+                Err(e) => tracing::warn!("Failed to load embedded syntax definition: {e}"),
+            }
+        }
+        builder.build()
+    })
+}
+
+/// Find a syntax by language token or name, checking custom definitions first.
+///
+/// Returns the matched `SyntaxReference` along with the `SyntaxSet` that owns
+/// it. Both are needed because `HighlightLines::highlight_line` must be called
+/// with the owning set.
+fn find_syntax(
+    lang: &str,
+) -> Option<(
+    &'static syntect::parsing::SyntaxReference,
+    &'static SyntaxSet,
+)> {
+    let custom = custom_syntax_set();
+    if let Some(s) = custom
+        .find_syntax_by_token(lang)
+        .or_else(|| custom.find_syntax_by_name(lang))
+    {
+        return Some((s, custom));
+    }
+    let defaults = default_syntax_set();
+    defaults
+        .find_syntax_by_token(lang)
+        .or_else(|| defaults.find_syntax_by_name(lang))
+        .map(|s| (s, defaults))
 }
 
 fn theme() -> &'static Theme {
