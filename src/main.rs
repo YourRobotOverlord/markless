@@ -23,7 +23,7 @@ use markless::config::{
     ConfigFlags, ImageMode, ThemeMode, clear_config_flags, global_config_path, load_config_flags,
     local_override_path, parse_flag_tokens, save_config_flags,
 };
-use markless::highlight::{HighlightBackground, set_background_mode};
+use markless::highlight::{HighlightBackground, set_background_mode, set_user_syntax_map};
 use markless::perf;
 
 /// A terminal markdown viewer with image support
@@ -313,6 +313,7 @@ fn main() -> Result<()> {
     };
     let effective = file_flags.union(&cli_flags);
 
+    set_user_syntax_map(effective.syntax_map.clone());
     perf::set_enabled(effective.perf);
     let render_debug_log_path = effective
         .render_debug_log

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -56,11 +57,20 @@ pub struct ConfigFlags {
     pub no_inline_math: bool,
     /// Re-enable inline math (overrides saved `--no-inline-math`).
     pub inline_math: bool,
+    /// Token-to-syntax-name mappings (e.g. "csharp" → "C#").
+    /// Each entry maps a markdown fence language token to the syntax name or
+    /// file extension that syntect recognises.
+    pub syntax_map: HashMap<String, String>,
 }
 
 impl ConfigFlags {
     #[must_use]
     pub fn union(&self, other: &Self) -> Self {
+        let mut syntax_map = self.syntax_map.clone();
+        // other's entries override self's (same precedence rule as other Options)
+        for (k, v) in &other.syntax_map {
+            syntax_map.insert(k.clone(), v.clone());
+        }
         Self {
             watch: self.watch || other.watch,
             no_mouse_select: self.no_mouse_select || other.no_mouse_select,
@@ -80,6 +90,7 @@ impl ConfigFlags {
             editor: other.editor.clone().or_else(|| self.editor.clone()),
             no_inline_math: self.no_inline_math || other.no_inline_math,
             inline_math: self.inline_math || other.inline_math,
+            syntax_map,
         }
     }
 }
@@ -279,6 +290,12 @@ pub fn save_config_flags(path: &Path, flags: &ConfigFlags) -> Result<()> {
             lines.push(format!("--editor {editor}"));
         }
     }
+    // Sort for deterministic output
+    let mut map_entries: Vec<_> = flags.syntax_map.iter().collect();
+    map_entries.sort_by_key(|(k, _)| k.as_str());
+    for (token, name) in map_entries {
+        lines.push(format!("--syntax-map {token}={name}"));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
@@ -361,6 +378,17 @@ pub fn parse_flag_tokens(tokens: &[String]) -> ConfigFlags {
             flags.no_inline_math = true;
         } else if token == "--inline-math" {
             flags.inline_math = true;
+        } else if token == "--syntax-map" {
+            if let Some(next) = tokens.get(i + 1) {
+                if let Some((tok, name)) = next.split_once('=') {
+                    flags.syntax_map.insert(tok.to_string(), name.to_string());
+                }
+                i += 1;
+            }
+        } else if let Some(value) = token.strip_prefix("--syntax-map=") {
+            if let Some((tok, name)) = value.split_once('=') {
+                flags.syntax_map.insert(tok.to_string(), name.to_string());
+            }
         }
         i += 1;
     }
@@ -909,8 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_math_overrides_no_inline_math_in_save() {
-        let dir = tempdir().unwrap();
+    fn test_inline_math_overrides_no_inline_math_in_save() {        let dir = tempdir().unwrap();
         let path = dir.path().join(".marklessrc");
         // Save --no-inline-math first
         let flags = ConfigFlags {
@@ -930,5 +957,85 @@ mod tests {
             !loaded.no_inline_math,
             "--inline-math should prevent --no-inline-math from being saved"
         );
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_space_form() {
+        let args = vec![
+            "--syntax-map".to_string(),
+            "csharp=C#".to_string(),
+        ];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_equals_form() {
+        let args = vec!["--syntax-map=autohotkey=AutoHotkey".to_string()];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(
+            flags.syntax_map.get("autohotkey").map(String::as_str),
+            Some("AutoHotkey")
+        );
+    }
+
+    #[test]
+    fn test_parse_flag_tokens_syntax_map_multiple_entries() {
+        let args = vec![
+            "--syntax-map".to_string(),
+            "csharp=C#".to_string(),
+            "--syntax-map".to_string(),
+            "mypython=Python".to_string(),
+        ];
+        let flags = parse_flag_tokens(&args);
+        assert_eq!(flags.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(flags.syntax_map.get("mypython").map(String::as_str), Some("Python"));
+    }
+
+    #[test]
+    fn test_config_union_syntax_map_other_overrides_self() {
+        let file = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "C#".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let cli = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "cs".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let merged = file.union(&cli);
+        assert_eq!(merged.syntax_map.get("csharp").map(String::as_str), Some("cs"));
+    }
+
+    #[test]
+    fn test_config_union_syntax_map_merges_disjoint_entries() {
+        let file = ConfigFlags {
+            syntax_map: [("csharp".to_string(), "C#".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let local = ConfigFlags {
+            syntax_map: [("autohotkey".to_string(), "AutoHotkey".to_string())].into(),
+            ..ConfigFlags::default()
+        };
+        let merged = file.union(&local);
+        assert_eq!(merged.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(merged.syntax_map.get("autohotkey").map(String::as_str), Some("AutoHotkey"));
+    }
+
+    #[test]
+    fn test_save_load_syntax_map_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".marklessrc");
+        let flags = ConfigFlags {
+            syntax_map: [
+                ("csharp".to_string(), "C#".to_string()),
+                ("ahk".to_string(), "AutoHotkey".to_string()),
+            ]
+            .into(),
+            ..ConfigFlags::default()
+        };
+        save_config_flags(&path, &flags).unwrap();
+        let loaded = load_config_flags(&path).unwrap();
+        assert_eq!(loaded.syntax_map.get("csharp").map(String::as_str), Some("C#"));
+        assert_eq!(loaded.syntax_map.get("ahk").map(String::as_str), Some("AutoHotkey"));
     }
 }

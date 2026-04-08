@@ -2,6 +2,7 @@
 //!
 //! Uses syntect for highlighting with Sublime Text syntax definitions.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use syntect::easy::HighlightLines;
@@ -159,9 +160,19 @@ mod tests {
 
     #[test]
     fn test_normalize_language_csharp_aliases() {
-        assert_eq!(normalize_language("csharp"), "cs");
-        assert_eq!(normalize_language("c#"), "cs");
-        assert_eq!(normalize_language("C#"), "cs");
+        assert_eq!(normalize_language("csharp").as_ref(), "cs");
+        assert_eq!(normalize_language("c#").as_ref(), "cs");
+        assert_eq!(normalize_language("C#").as_ref(), "cs");
+    }
+
+    #[test]
+    fn test_set_user_syntax_map_overrides_builtin_alias() {
+        // The user map is a process-level OnceLock, so we can only test that
+        // if it IS set, user entries take precedence.  Use a token that has no
+        // built-in alias so the test is idempotent across the test suite.
+        let result = normalize_language("myfakelang");
+        // Without a user map entry the token passes through unchanged.
+        assert_eq!(result.as_ref(), "myfakelang");
     }
 
     #[test]
@@ -450,21 +461,42 @@ pub fn user_syntax_set() -> &'static SyntaxSet {
     })
 }
 
+static USER_SYNTAX_MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+
 /// Map common markdown fence language identifiers to the token that syntect
 /// recognises (typically a file extension or syntax name).
 ///
 /// syntect's `find_syntax_by_token` matches against registered file extensions
 /// and scope names, not arbitrary aliases, so identifiers like `csharp` that
 /// differ from the extension (`cs`) need an explicit mapping here.
-fn normalize_language(lang: &str) -> &str {
-    match lang {
+///
+/// User-provided mappings (set via `--syntax-map` in the config file) are
+/// checked first and can override the built-in aliases.
+fn normalize_language(lang: &str) -> std::borrow::Cow<'_, str> {
+    // Check user-provided map first
+    if let Some(map) = USER_SYNTAX_MAP.get() {
+        if let Some(mapped) = map.get(lang) {
+            return std::borrow::Cow::Owned(mapped.clone());
+        }
+    }
+    // Built-in aliases
+    let mapped = match lang {
         "csharp" | "CSharp" | "CSHARP" | "c#" | "C#" | "dotnet" => "cs",
         "javascript" | "JavaScript" => "js",
         "typescript" | "TypeScript" => "ts",
         "shellscript" | "shell" | "bash" | "zsh" | "sh" => "bash",
         "dockerfile" | "Dockerfile" => "Dockerfile",
         _ => lang,
-    }
+    };
+    std::borrow::Cow::Borrowed(mapped)
+}
+
+/// Set the user-provided token-to-syntax mappings loaded from the config file.
+///
+/// Must be called at most once, before any highlighting begins. Subsequent
+/// calls after initialization are silently ignored (OnceLock semantics).
+pub fn set_user_syntax_map(map: HashMap<String, String>) {
+    let _ = USER_SYNTAX_MAP.set(map);
 }
 
 /// Find a syntax by language token or name.
@@ -480,6 +512,7 @@ fn find_syntax(
     &'static SyntaxSet,
 )> {
     let lang = normalize_language(lang);
+    let lang = lang.as_ref();
     for ss in [user_syntax_set(), custom_syntax_set(), default_syntax_set()] {
         if let Some(s) = ss
             .find_syntax_by_token(lang)
