@@ -1056,6 +1056,75 @@ fn test_editor_status_bar_shows_modified_after_edit() {
 }
 
 #[test]
+fn test_editor_renders_tab_as_placeholder() {
+    // RED: Tab characters should render as → placeholder, not as invisible/raw \t.
+    let md = "\tindented line";
+    let doc = Document::parse(md).unwrap();
+    let mut model = Model::new(PathBuf::from("test.md"), doc, (80, 24));
+    model = crate::app::update(model, crate::app::Message::EnterEditMode);
+    let mut watcher = None;
+    crate::app::App::handle_message_side_effects(
+        &mut model,
+        &mut watcher,
+        &crate::app::Message::EnterEditMode,
+    );
+
+    let mut terminal = create_test_terminal();
+    terminal.draw(|frame| render(&mut model, frame)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let first_row: String = (0..buffer.area.width)
+        .map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string())
+        .collect();
+
+    assert!(
+        first_row.contains('→'),
+        "Tab character should render as → placeholder, got: '{first_row}'"
+    );
+    assert!(
+        !first_row.contains('\t'),
+        "Raw tab should not appear in rendered output, got: '{first_row}'"
+    );
+}
+
+#[test]
+fn test_editor_tab_on_cursor_line_renders_as_placeholder() {
+    // RED: Tab on the cursor line (where cursor rendering splits before/cursor_char/after)
+    // should also show → for any tab character.
+    let md = "hello\tworld";
+    let doc = Document::parse(md).unwrap();
+    let mut model = Model::new(PathBuf::from("test.md"), doc, (80, 24));
+    model = crate::app::update(model, crate::app::Message::EnterEditMode);
+    let mut watcher = None;
+    crate::app::App::handle_message_side_effects(
+        &mut model,
+        &mut watcher,
+        &crate::app::Message::EnterEditMode,
+    );
+
+    // Move cursor past the tab so it ends up in 'after'
+    for _ in 0..6 {
+        model = crate::app::update(
+            model,
+            crate::app::Message::EditorMoveCursor(crate::editor::Direction::Right),
+        );
+    }
+
+    let mut terminal = create_test_terminal();
+    terminal.draw(|frame| render(&mut model, frame)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let first_row: String = (0..buffer.area.width)
+        .map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string())
+        .collect();
+
+    assert!(
+        first_row.contains('→'),
+        "Tab on cursor line should render as → placeholder, got: '{first_row}'"
+    );
+}
+
+#[test]
 fn test_image_x_offset_respects_wrap_width() {
     // RED: When wrap_width is set, image centering should use wrap_width,
     // not the full doc_area width.

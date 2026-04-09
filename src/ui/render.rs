@@ -331,17 +331,19 @@ fn render_editor(model: &Model, frame: &mut Frame, area: Rect) {
             };
 
             if !before.is_empty() {
-                spans.push(Span::raw(before.to_string()));
+                spans.extend(spans_with_tabs(before));
             }
+            // Render the cursor character; show tab placeholder when cursor sits on a tab.
+            let display_cursor = if cursor_char == "\t" { "→" } else { cursor_char };
             spans.push(Span::styled(
-                cursor_char.to_string(),
+                display_cursor.to_string(),
                 Style::default().bg(Color::White).fg(Color::Black),
             ));
             if !after.is_empty() {
-                spans.push(Span::raw(after.to_string()));
+                spans.extend(spans_with_tabs(after));
             }
         } else {
-            spans.push(Span::raw(line_text));
+            spans.extend(spans_with_tabs(&line_text));
         }
 
         content.push(Line::from(spans));
@@ -400,6 +402,30 @@ pub const fn line_number_width(total_lines: usize) -> u16 {
     } else {
         6
     }
+}
+
+/// Split `text` into styled spans, rendering each `\t` as a dim `→` placeholder.
+///
+/// This keeps the visual representation of tabs consistent and visible in the
+/// editor, while the underlying buffer continues to store the raw `\t` byte.
+fn spans_with_tabs(text: &str) -> Vec<Span<'static>> {
+    let tab_style = Style::default().fg(Color::DarkGray);
+    let mut result = Vec::new();
+    let mut last = 0;
+
+    for (i, _) in text.match_indices('\t') {
+        if i > last {
+            result.push(Span::raw(text[last..i].to_string()));
+        }
+        result.push(Span::styled("→".to_string(), tab_style));
+        last = i + 1;
+    }
+
+    if last < text.len() {
+        result.push(Span::raw(text[last..].to_string()));
+    }
+
+    result
 }
 
 fn highlight_spans(spans: &[Span<'_>], query: &str) -> Vec<Span<'static>> {
